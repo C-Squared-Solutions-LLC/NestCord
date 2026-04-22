@@ -65,6 +65,7 @@ class NestRecorderCoordinator:
 
         self.storage_root = Path(data[CONF_STORAGE_ROOT])
         self.glacier = GlacierClient(
+            hass,
             aws_access_key_id=data[CONF_AWS_ACCESS_KEY_ID],
             aws_secret_access_key=data[CONF_AWS_SECRET_ACCESS_KEY],
             region=data[CONF_AWS_REGION],

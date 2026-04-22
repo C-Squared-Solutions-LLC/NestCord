@@ -1,11 +1,20 @@
-"""AWS S3 / Glacier client wrapper using aiobotocore."""
+"""AWS S3 / Glacier client using boto3 via the HA executor.
+
+We deliberately use synchronous boto3 offloaded to hass.async_add_executor_job
+rather than aiobotocore. Reason: HA bundles boto3 for other integrations
+(already present, no pin fight), while aiobotocore version tracking against
+HA's botocore is a constant source of breakage.
+"""
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
+
+from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,14 +29,9 @@ class RestoreState:
 
 
 class GlacierClient:
-    """Wraps aiobotocore for uploads, restores, and head checks.
-
-    The client is constructed once per coordinator and owns a session that
-    creates fresh clients on each call (aiobotocore's recommended pattern).
-    """
-
     def __init__(
         self,
+        hass: HomeAssistant,
         *,
         aws_access_key_id: str,
         aws_secret_access_key: str,
@@ -35,9 +39,8 @@ class GlacierClient:
         bucket: str,
         endpoint_url: str | None = None,
     ) -> None:
+        self._hass = hass
         self._bucket = bucket
-        self._region = region
-        self._endpoint_url = endpoint_url
         self._kwargs: dict[str, Any] = {
             "aws_access_key_id": aws_access_key_id,
             "aws_secret_access_key": aws_secret_access_key,
@@ -45,41 +48,50 @@ class GlacierClient:
         }
         if endpoint_url:
             self._kwargs["endpoint_url"] = endpoint_url
+        self._client: Any = None
 
     @property
     def bucket(self) -> str:
         return self._bucket
 
-    def _session(self):
-        # Imported lazily so HA can install the requirement before use.
-        from aiobotocore.session import get_session
+    def _get_client(self) -> Any:
+        if self._client is None:
+            import boto3
 
-        return get_session()
+            self._client = boto3.client("s3", **self._kwargs)
+        return self._client
+
+    async def _run(self, fn, *args, **kwargs):
+        return await self._hass.async_add_executor_job(partial(fn, *args, **kwargs))
 
     async def async_head_bucket(self) -> None:
-        """Used by config flow to validate credentials."""
-        async with self._session().create_client("s3", **self._kwargs) as s3:
-            await s3.head_bucket(Bucket=self._bucket)
+        def _work() -> None:
+            self._get_client().head_bucket(Bucket=self._bucket)
+
+        await self._run(_work)
 
     async def async_upload_segment(
         self, path: Path, key: str, storage_class: str
     ) -> None:
-        async with self._session().create_client("s3", **self._kwargs) as s3:
-            with path.open("rb") as fp:
-                await s3.put_object(
-                    Bucket=self._bucket,
-                    Key=key,
-                    Body=fp,
-                    StorageClass=storage_class,
-                    ContentType="video/mp4",
-                )
+        def _work() -> None:
+            self._get_client().upload_file(
+                str(path),
+                self._bucket,
+                key,
+                ExtraArgs={
+                    "StorageClass": storage_class,
+                    "ContentType": "video/mp4",
+                },
+            )
+
+        await self._run(_work)
 
     async def async_initiate_restore(
         self, key: str, tier: str, days: int
     ) -> None:
-        async with self._session().create_client("s3", **self._kwargs) as s3:
+        def _work() -> None:
             try:
-                await s3.restore_object(
+                self._get_client().restore_object(
                     Bucket=self._bucket,
                     Key=key,
                     RestoreRequest={
@@ -87,19 +99,25 @@ class GlacierClient:
                         "GlacierJobParameters": {"Tier": tier},
                     },
                 )
-            except Exception as err:  # noqa: BLE001 - boto wraps many kinds
+            except Exception as err:  # noqa: BLE001
                 if "RestoreAlreadyInProgress" in str(err):
                     _LOGGER.debug("Restore already in progress for %s", key)
                     return
                 raise
 
+        await self._run(_work)
+
     async def async_head_object(self, key: str) -> RestoreState | None:
-        async with self._session().create_client("s3", **self._kwargs) as s3:
+        def _work() -> dict[str, Any] | None:
             try:
-                resp = await s3.head_object(Bucket=self._bucket, Key=key)
+                return self._get_client().head_object(Bucket=self._bucket, Key=key)
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning("head_object failed for %s: %s", key, err)
                 return None
+
+        resp = await self._run(_work)
+        if resp is None:
+            return None
         restore_hdr = resp.get("Restore") or resp.get("ResponseMetadata", {}).get(
             "HTTPHeaders", {}
         ).get("x-amz-restore")
@@ -113,9 +131,11 @@ class GlacierClient:
         )
 
     async def async_list_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        async with self._session().create_client("s3", **self._kwargs) as s3:
-            paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+        def _work() -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            paginator = self._get_client().get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
                 out.extend(page.get("Contents", []) or [])
-        return out
+            return out
+
+        return await self._run(_work)

@@ -58,6 +58,7 @@ class NestRecorderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
 
             client = GlacierClient(
+                self.hass,
                 aws_access_key_id=user_input[CONF_AWS_ACCESS_KEY_ID],
                 aws_secret_access_key=user_input[CONF_AWS_SECRET_ACCESS_KEY],
                 region=user_input[CONF_AWS_REGION],
@@ -71,11 +72,15 @@ class NestRecorderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "auth"
 
             root = Path(user_input[CONF_STORAGE_ROOT])
-            try:
+
+            def _probe_write() -> None:
                 root.mkdir(parents=True, exist_ok=True)
                 probe = root / ".nest_recorder_probe"
                 probe.write_text("ok", encoding="utf-8")
                 probe.unlink()
+
+            try:
+                await self.hass.async_add_executor_job(_probe_write)
             except OSError as err:
                 _LOGGER.warning("storage path not writable: %s", err)
                 errors["base"] = "storage_path"
