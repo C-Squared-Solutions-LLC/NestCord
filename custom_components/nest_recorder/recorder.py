@@ -91,16 +91,28 @@ class RecorderTask:
 
     async def _supervisor(self) -> None:
         backoff = FFMPEG_RELAUNCH_BACKOFF_MIN
+        consecutive_acquire_failures = 0
         while not self._stop_event.is_set():
             if self._cfg.kind == CameraKind.WEBRTC and not self._battery_active:
                 await asyncio.sleep(2)
                 continue
             try:
                 handle = await self._provider.async_acquire()
+                consecutive_acquire_failures = 0
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning(
-                    "%s: stream acquire failed: %s", self._cfg.camera_id, err
-                )
+                consecutive_acquire_failures += 1
+                if consecutive_acquire_failures == 1:
+                    _LOGGER.warning(
+                        "%s: stream acquire failed: %s", self._cfg.camera_id, err
+                    )
+                elif consecutive_acquire_failures >= 5:
+                    _LOGGER.warning(
+                        "%s: stream acquire has failed %d times; backing off to 5 min",
+                        self._cfg.camera_id,
+                        consecutive_acquire_failures,
+                    )
+                    await asyncio.sleep(300)
+                    continue
                 await asyncio.sleep(backoff)
                 backoff = min(FFMPEG_RELAUNCH_BACKOFF_MAX, backoff * 2)
                 continue

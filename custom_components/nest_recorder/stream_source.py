@@ -181,27 +181,53 @@ class Go2RtcStreamProvider(StreamProvider):
         self._go2rtc_host = go2rtc_host
         self._go2rtc_rtsp_port = go2rtc_rtsp_port
         self._stream_name = f"nest_recorder_{camera_id}"
+        self._unreachable_logged = False
 
     async def async_acquire(self) -> StreamHandle:
-        await self._ensure_go2rtc_stream()
+        # First try to fall back to whatever the camera entity itself reports
+        # as a stream URL. For wired Nest cameras the core integration provides
+        # an SDM RTSP URL here; for WebRTC-only cameras it's usually empty.
+        direct = await self._try_entity_stream_source()
+        if direct:
+            self._handle = StreamHandle(url=direct, expires_at=time.time() + 270)
+            return self._handle
+
+        if not await self._ensure_go2rtc_stream():
+            raise RuntimeError(
+                f"no stream available for {self.entity_id}: "
+                "entity.stream_source() returned empty and go2rtc is unreachable"
+            )
         url = (
             f"rtsp://{self._go2rtc_host}:{self._go2rtc_rtsp_port}/{self._stream_name}"
         )
-        # go2rtc connections don't have a fixed TTL; we treat the URL as permanent
-        # and let FFmpeg -reconnect (or supervisor relaunch) handle drops.
         self._handle = StreamHandle(url=url, expires_at=time.time() + 86400)
         return self._handle
+
+    async def _try_entity_stream_source(self) -> str | None:
+        try:
+            from homeassistant.helpers.entity_component import EntityComponent
+
+            component: EntityComponent | None = self.hass.data.get("camera")
+            if component is None:
+                return None
+            entity = component.get_entity(self.entity_id)
+            if entity is None:
+                return None
+            url = await entity.stream_source()
+            return url or None
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("%s: entity stream_source raised: %s", self.camera_id, err)
+            return None
 
     async def async_release(self) -> None:
         await self._remove_go2rtc_stream()
         self._handle = None
 
-    async def _ensure_go2rtc_stream(self) -> None:
-        """Register a stream in go2rtc whose source is the Nest camera entity.
+    async def _ensure_go2rtc_stream(self) -> bool:
+        """Register a stream in go2rtc. Returns True on success, False otherwise.
 
-        Uses go2rtc's `ha_entity` source adapter exposed by the bundled
-        integration: `ha_entity://<entity_id>` directs go2rtc to pull the
-        stream via HA's own camera WebRTC pipeline.
+        Logs the unreachable state only once per provider to avoid spamming
+        the log when go2rtc isn't available on this install.
         """
         import aiohttp
 
@@ -215,11 +241,23 @@ class Go2RtcStreamProvider(StreamProvider):
                 async with sess.put(url, params=payload, timeout=10) as resp:
                     if resp.status >= 400:
                         body = await resp.text()
-                        _LOGGER.warning(
-                            "go2rtc register failed (%s): %s", resp.status, body
-                        )
+                        if not self._unreachable_logged:
+                            _LOGGER.warning(
+                                "go2rtc register failed (%s): %s", resp.status, body
+                            )
+                            self._unreachable_logged = True
+                        return False
+            self._unreachable_logged = False
+            return True
         except aiohttp.ClientError as err:
-            _LOGGER.warning("go2rtc register unreachable: %s", err)
+            if not self._unreachable_logged:
+                _LOGGER.warning(
+                    "%s: go2rtc unreachable (%s) -- this camera will not be recorded",
+                    self.camera_id,
+                    err,
+                )
+                self._unreachable_logged = True
+            return False
 
     async def _remove_go2rtc_stream(self) -> None:
         import aiohttp

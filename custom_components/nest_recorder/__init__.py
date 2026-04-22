@@ -110,13 +110,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
-    from homeassistant.components import media_source as ha_media_source
-    from .media_source import async_get_media_source
-
-    hass.data[DOMAIN].setdefault("_media_source_registered", False)
-    if not hass.data[DOMAIN]["_media_source_registered"]:
-        ha_media_source.async_register_source(hass, await async_get_media_source(hass))
-        hass.data[DOMAIN]["_media_source_registered"] = True
+    # MediaSource is auto-discovered by HA from this integration's
+    # media_source.py (async_get_media_source). No explicit registration.
 
     return True
 

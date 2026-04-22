@@ -38,10 +38,12 @@ class SegmentWatcher:
 
     async def async_start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        self._storage_root.mkdir(parents=True, exist_ok=True)
+        await self._hass.async_add_executor_job(
+            lambda: self._storage_root.mkdir(parents=True, exist_ok=True)
+        )
         try:
             from watchdog.observers import Observer
-            from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileClosedEvent, FileCreatedEvent
+            from watchdog.events import FileSystemEventHandler
 
             outer = self
 
@@ -59,10 +61,13 @@ class SegmentWatcher:
                     if dest and str(dest).endswith(".mp4"):
                         outer._schedule_finalize(Path(dest), delay=0.5)
 
-            observer = Observer()
-            observer.schedule(_Handler(), str(self._storage_root), recursive=True)
-            observer.start()
-            self._observer = observer
+            def _build_and_start():
+                observer = Observer()
+                observer.schedule(_Handler(), str(self._storage_root), recursive=True)
+                observer.start()
+                return observer
+
+            self._observer = await self._hass.async_add_executor_job(_build_and_start)
             _LOGGER.debug("watchdog observer started on %s", self._storage_root)
         except Exception as err:  # noqa: BLE001 - watchdog optional
             _LOGGER.warning(
