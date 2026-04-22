@@ -1,0 +1,112 @@
+record_clip:
+  name: Record clip
+  description: >
+    Tag the currently-rolling segment as a manual event clip so it appears
+    under the camera's Events view in the Media browser.
+  fields:
+    entity_id:
+      name: Camera entity
+      description: The Nest camera to tag (e.g. camera.front_door).
+      required: true
+      selector:
+        entity:
+          domain: camera
+          integration: nest
+    duration:
+      name: Duration (seconds)
+      description: Informational only in this release; the full segment is tagged.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 600
+          unit_of_measurement: s
+    tag:
+      name: Tag
+      description: Free-text label stored on the event row.
+      selector:
+        text:
+
+restore_from_glacier:
+  name: Restore from Glacier
+  description: >
+    Initiate an S3 Restore for a single segment or a camera/time range of
+    archived segments. A persistent notification fires when the restore is
+    complete.
+  fields:
+    segment_id:
+      name: Segment ID
+      description: Restore a single segment by its numeric ID (from the DB).
+      selector:
+        number:
+          mode: box
+          min: 1
+    range:
+      name: Camera + range
+      description: Alternative to segment_id — restore everything archived in the range.
+      selector:
+        object:
+    tier:
+      name: Restore tier
+      description: Standard (3–5h), Expedited (1–5 min, pricier), Bulk (5–12h, cheap).
+      default: Standard
+      selector:
+        select:
+          options:
+            - Standard
+            - Expedited
+            - Bulk
+    days:
+      name: Keep restored for (days)
+      description: How long to keep the object restored in S3 before it returns to Glacier.
+      default: 7
+      selector:
+        number:
+          min: 1
+          max: 365
+          unit_of_measurement: d
+
+rebuild_index:
+  name: Rebuild index
+  description: >
+    Reconcile the SQLite index with the local filesystem. Useful after
+    restoring backups or manual cleanup.
+
+purge_local:
+  name: Purge local
+  description: >
+    Delete local MP4 files older than N days. S3 copies are never touched.
+  fields:
+    entity_id:
+      name: Camera entity
+      description: Limit the purge to one camera (omit for all).
+      selector:
+        entity:
+          domain: camera
+          integration: nest
+    older_than_days:
+      name: Older than (days)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 3650
+          unit_of_measurement: d
+
+extend_retention:
+  name: Extend retention
+  description: >
+    Pin a specific segment from garbage collection until a given ISO timestamp.
+  fields:
+    segment_id:
+      name: Segment ID
+      required: true
+      selector:
+        number:
+          mode: box
+          min: 1
+    until:
+      name: Until (ISO 8601)
+      required: true
+      selector:
+        text:

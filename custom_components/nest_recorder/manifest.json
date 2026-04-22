@@ -1,0 +1,16 @@
+{
+  "domain": "nest_recorder",
+  "name": "Nest Recorder",
+  "version": "0.1.0",
+  "codeowners": ["@c2rd"],
+  "config_flow": true,
+  "dependencies": ["nest", "ffmpeg", "http"],
+  "after_dependencies": ["media_source", "go2rtc"],
+  "documentation": "https://github.com/c2rd/nest_recorder",
+  "issue_tracker": "https://github.com/c2rd/nest_recorder/issues",
+  "iot_class": "local_polling",
+  "requirements": [
+    "aiobotocore==2.13.0",
+    "watchdog==4.0.1"
+  ]
+}

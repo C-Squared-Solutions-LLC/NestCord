@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nest Recorder",
+        "description": "Enter AWS credentials for the bucket to mirror recordings to, and the local path where files are written.",
+        "data": {
+          "aws_access_key_id": "AWS Access Key ID",
+          "aws_secret_access_key": "AWS Secret Access Key",
+          "aws_region": "AWS Region",
+          "bucket": "S3 Bucket",
+          "storage_root": "Local storage path",
+          "endpoint_url": "S3 Endpoint URL (optional, for MinIO/testing)"
+        }
+      }
+    },
+    "error": {
+      "auth": "Could not reach bucket with those credentials (head_bucket failed).",
+      "storage_path": "Local storage path is not writable."
+    },
+    "abort": {
+      "already_configured": "A Nest Recorder entry for that bucket/region already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Nest Recorder options",
+        "data": {
+          "storage_class": "Default Glacier storage class",
+          "retention_days": "Local retention (days)",
+          "segment_seconds": "Segment length (seconds)",
+          "upload_concurrency": "S3 upload concurrency"
+        }
+      }
+    }
+  },
+  "services": {
+    "record_clip": { "name": "Record clip", "description": "Tag the currently-rolling segment as a manual event." },
+    "restore_from_glacier": { "name": "Restore from Glacier", "description": "Initiate a Glacier restore for one or more segments." },
+    "rebuild_index": { "name": "Rebuild index", "description": "Reconcile the SQLite index with files on disk." },
+    "purge_local": { "name": "Purge local", "description": "Delete local MP4 files older than N days." },
+    "extend_retention": { "name": "Extend retention", "description": "Pin a segment from garbage collection." }
+  }
+}
