@@ -17,12 +17,16 @@ from .const import (
     CONF_AWS_SECRET_ACCESS_KEY,
     CONF_BUCKET,
     CONF_CAMERAS,
+    CONF_CONTINUOUS_RECORDING,
     CONF_ENDPOINT_URL,
+    CONF_EVENT_CLIP_SECONDS,
     CONF_RETENTION_DAYS,
     CONF_SEGMENT_SECONDS,
     CONF_STORAGE_CLASS,
     CONF_STORAGE_ROOT,
     CONF_UPLOAD_CONCURRENCY,
+    DEFAULT_CONTINUOUS_RECORDING,
+    DEFAULT_EVENT_CLIP_SECONDS,
     DEFAULT_RETENTION_DAYS,
     DEFAULT_SEGMENT_SECONDS,
     DEFAULT_STORAGE_CLASS,
@@ -94,6 +98,8 @@ class NestRecorderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_RETENTION_DAYS: DEFAULT_RETENTION_DAYS,
                         CONF_SEGMENT_SECONDS: DEFAULT_SEGMENT_SECONDS,
                         CONF_UPLOAD_CONCURRENCY: DEFAULT_UPLOAD_CONCURRENCY,
+                        CONF_CONTINUOUS_RECORDING: DEFAULT_CONTINUOUS_RECORDING,
+                        CONF_EVENT_CLIP_SECONDS: DEFAULT_EVENT_CLIP_SECONDS,
                         CONF_CAMERAS: {},
                     },
                 )
@@ -154,6 +160,18 @@ class NestRecorderOptionsFlow(config_entries.OptionsFlow):
                         CONF_UPLOAD_CONCURRENCY, DEFAULT_UPLOAD_CONCURRENCY
                     ),
                 ): vol.All(int, vol.Range(min=1, max=16)),
+                vol.Required(
+                    CONF_CONTINUOUS_RECORDING,
+                    default=current.get(
+                        CONF_CONTINUOUS_RECORDING, DEFAULT_CONTINUOUS_RECORDING
+                    ),
+                ): bool,
+                vol.Required(
+                    CONF_EVENT_CLIP_SECONDS,
+                    default=current.get(
+                        CONF_EVENT_CLIP_SECONDS, DEFAULT_EVENT_CLIP_SECONDS
+                    ),
+                ): vol.All(int, vol.Range(min=0, max=120)),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

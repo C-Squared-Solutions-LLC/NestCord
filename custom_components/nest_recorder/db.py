@@ -55,6 +55,14 @@ _MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS ix_events_segment
         ON events(segment_id);
     """,
+    # v2 -- event media columns (snapshot + clip)
+    """
+    ALTER TABLE events ADD COLUMN snapshot_local_path TEXT;
+    ALTER TABLE events ADD COLUMN snapshot_s3_key TEXT;
+    ALTER TABLE events ADD COLUMN clip_local_path TEXT;
+    ALTER TABLE events ADD COLUMN clip_s3_key TEXT;
+    ALTER TABLE events ADD COLUMN media_status TEXT DEFAULT 'PENDING';
+    """,
 ]
 
 
@@ -83,6 +91,11 @@ class EventRow:
     timestamp: int
     event_session_id: str | None
     segment_id: int | None
+    snapshot_local_path: str | None = None
+    snapshot_s3_key: str | None = None
+    clip_local_path: str | None = None
+    clip_s3_key: str | None = None
+    media_status: str | None = None
 
 
 class SegmentStore:
@@ -409,3 +422,48 @@ class SegmentStore:
             return [EventRow(**dict(r)) for r in rows]
 
         return await self._exec(_work)
+
+    async def get_event(self, event_id: int) -> EventRow | None:
+        def _work() -> EventRow | None:
+            assert self._conn is not None
+            row = self._conn.execute(
+                "SELECT * FROM events WHERE id=?", (event_id,)
+            ).fetchone()
+            return EventRow(**dict(row)) if row else None
+
+        return await self._exec(_work)
+
+    async def update_event_media(
+        self,
+        event_id: int,
+        *,
+        snapshot_local_path: str | None = None,
+        snapshot_s3_key: str | None = None,
+        clip_local_path: str | None = None,
+        clip_s3_key: str | None = None,
+        media_status: str | None = None,
+    ) -> None:
+        fields: list[str] = []
+        values: list[Any] = []
+        for col, val in (
+            ("snapshot_local_path", snapshot_local_path),
+            ("snapshot_s3_key", snapshot_s3_key),
+            ("clip_local_path", clip_local_path),
+            ("clip_s3_key", clip_s3_key),
+            ("media_status", media_status),
+        ):
+            if val is not None:
+                fields.append(f"{col}=?")
+                values.append(val)
+        if not fields:
+            return
+        values.append(event_id)
+
+        def _work() -> None:
+            assert self._conn is not None
+            self._conn.execute(
+                f"UPDATE events SET {', '.join(fields)} WHERE id=?",
+                tuple(values),
+            )
+
+        await self._exec(_work)

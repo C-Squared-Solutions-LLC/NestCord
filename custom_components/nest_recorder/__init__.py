@@ -19,7 +19,7 @@ from .const import (
     SERVICE_EXTEND_RETENTION,
 )
 from .coordinator import NestRecorderCoordinator
-from .http_view import SegmentMediaView
+from .http_view import EventMediaView, SegmentMediaView
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,6 +74,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     hass.http.register_view(SegmentMediaView(coordinator))
+    hass.http.register_view(EventMediaView(coordinator))
 
     async def _handle_record_clip(call: ServiceCall) -> None:
         await coordinator.async_record_clip(

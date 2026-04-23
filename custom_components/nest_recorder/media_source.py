@@ -35,25 +35,41 @@ class NestRecorderMediaSource(MediaSource):
     async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
         ident = item.identifier or ""
         parts = ident.split("/")
-        if len(parts) < 2 or parts[0] != "segment":
-            raise ValueError(f"cannot resolve {ident}")
-        segment_id = int(parts[1])
-        for coord in self._coordinators():
-            seg = await coord.store.get_segment(segment_id)
-            if seg is None:
-                continue
-            if seg.local_path is None:
-                # Return a placeholder URL; HA will surface the URL in the player
-                # but the user should call restore_from_glacier first.
+        if len(parts) >= 2 and parts[0] == "segment":
+            segment_id = int(parts[1])
+            for coord in self._coordinators():
+                seg = await coord.store.get_segment(segment_id)
+                if seg is None:
+                    continue
+                if seg.local_path is None:
+                    return PlayMedia(
+                        url=f"data:text/plain,archived%20segment%20{segment_id}",
+                        mime_type="text/plain",
+                    )
                 return PlayMedia(
-                    url=f"data:text/plain,archived%20segment%20{segment_id}",
-                    mime_type="text/plain",
+                    url=f"/api/nest_recorder/segment/{segment_id}",
+                    mime_type="video/mp4",
                 )
-            return PlayMedia(
-                url=HTTP_VIEW_URL.format(segment_id=segment_id),
-                mime_type="video/mp4",
-            )
-        raise ValueError(f"segment {segment_id} not found")
+            raise ValueError(f"segment {segment_id} not found")
+        if len(parts) >= 3 and parts[0] == "event":
+            event_id = int(parts[1])
+            kind = parts[2]  # "snapshot" or "clip"
+            for coord in self._coordinators():
+                ev = await coord.store.get_event(event_id)
+                if ev is None:
+                    continue
+                if kind == "snapshot" and ev.snapshot_local_path:
+                    return PlayMedia(
+                        url=f"/api/nest_recorder/event/{event_id}/snapshot",
+                        mime_type="image/jpeg",
+                    )
+                if kind == "clip" and ev.clip_local_path:
+                    return PlayMedia(
+                        url=f"/api/nest_recorder/event/{event_id}/clip",
+                        mime_type="video/mp4",
+                    )
+            raise ValueError(f"event {event_id} {kind} not available")
+        raise ValueError(f"cannot resolve {ident}")
 
     async def async_browse_media(self, item: MediaSourceItem) -> BrowseMediaSource:
         ident = item.identifier or ""
@@ -98,13 +114,37 @@ class NestRecorderMediaSource(MediaSource):
                     "%Y-%m-%d %H:%M:%S"
                 )
                 title = f"{ts} — {ev.type}"
-                if ev.segment_id is None:
+                if ev.clip_local_path:
+                    children.append(
+                        BrowseMediaSource(
+                            domain=DOMAIN,
+                            identifier=f"event/{ev.id}/clip",
+                            media_class=MediaClass.VIDEO,
+                            media_content_type="video/mp4",
+                            title=f"{title} (clip)",
+                            can_play=True,
+                            can_expand=False,
+                        )
+                    )
+                if ev.snapshot_local_path:
+                    children.append(
+                        BrowseMediaSource(
+                            domain=DOMAIN,
+                            identifier=f"event/{ev.id}/snapshot",
+                            media_class=MediaClass.IMAGE,
+                            media_content_type="image/jpeg",
+                            title=f"{title} (snapshot)",
+                            can_play=True,
+                            can_expand=False,
+                        )
+                    )
+                if not ev.clip_local_path and not ev.snapshot_local_path:
+                    if ev.segment_id is not None:
+                        seg = await coord.store.get_segment(ev.segment_id)
+                        if seg is not None:
+                            children.append(self._segment_leaf(seg, title_override=title))
+                            continue
                     children.append(self._leaf_unavailable(f"event/{ev.id}", title))
-                else:
-                    seg = await coord.store.get_segment(ev.segment_id)
-                    if seg is None:
-                        continue
-                    children.append(self._segment_leaf(seg, title_override=title))
             break
         return self._dir(f"camera/{cam_id}/events", "Events", children=children)
 

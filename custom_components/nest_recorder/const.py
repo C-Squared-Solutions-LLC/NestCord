@@ -22,6 +22,10 @@ CONF_UPLOAD_CONCURRENCY: Final = "upload_concurrency"
 CONF_CAMERAS: Final = "cameras"
 CONF_RESTORE_TIER: Final = "restore_tier"
 CONF_RESTORE_DAYS: Final = "restore_days"
+CONF_CONTINUOUS_RECORDING: Final = "continuous_recording"
+CONF_EVENT_CLIP_SECONDS: Final = "event_clip_seconds"
+DEFAULT_CONTINUOUS_RECORDING: Final = False
+DEFAULT_EVENT_CLIP_SECONDS: Final = 15
 
 DEFAULT_STORAGE_CLASS: Final = "GLACIER"
 DEFAULT_RETENTION_DAYS: Final = 14

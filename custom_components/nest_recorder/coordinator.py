@@ -18,7 +18,9 @@ from .const import (
     CONF_AWS_SECRET_ACCESS_KEY,
     CONF_BUCKET,
     CONF_CAMERAS,
+    CONF_CONTINUOUS_RECORDING,
     CONF_ENDPOINT_URL,
+    CONF_EVENT_CLIP_SECONDS,
     CONF_RESTORE_DAYS,
     CONF_RESTORE_TIER,
     CONF_RETENTION_DAYS,
@@ -26,6 +28,8 @@ from .const import (
     CONF_STORAGE_CLASS,
     CONF_STORAGE_ROOT,
     CONF_UPLOAD_CONCURRENCY,
+    DEFAULT_CONTINUOUS_RECORDING,
+    DEFAULT_EVENT_CLIP_SECONDS,
     DEFAULT_RESTORE_DAYS,
     DEFAULT_RESTORE_TIER,
     DEFAULT_RETENTION_DAYS,
@@ -105,8 +109,16 @@ class NestRecorderCoordinator:
         )
         await self._watcher.async_start()
 
-        for cam in cams:
-            await self._start_recorder(cam)
+        if self.entry.options.get(
+            CONF_CONTINUOUS_RECORDING, DEFAULT_CONTINUOUS_RECORDING
+        ):
+            for cam in cams:
+                await self._start_recorder(cam)
+        else:
+            _LOGGER.info(
+                "Continuous recording disabled; running in event-clip mode. "
+                "Toggle 'continuous_recording' in integration options to enable."
+            )
 
         self._event_listener_unsub = self.hass.bus.async_listen(
             NEST_BUS_EVENT, self._on_nest_event
@@ -288,22 +300,161 @@ class NestRecorderCoordinator:
         if event_type not in KNOWN_EVENT_TYPES:
             return
         cams = await self.store.list_cameras()
-        camera_id: str | None = None
+        camera: dict[str, Any] | None = None
         for c in cams:
             if c["device_id"] == device_id:
-                camera_id = c["id"]
+                camera = c
                 break
-        if camera_id is None:
+        if camera is None:
             return
         ts = int(time.time())
         session_id = data.get("nest_event_id") or data.get("event_session_id")
-        open_seg = await self.store.open_segment_for(camera_id, ts)
-        await self.store.insert_event(
-            camera_id=camera_id,
+        open_seg = await self.store.open_segment_for(camera["id"], ts)
+        event_id = await self.store.insert_event(
+            camera_id=camera["id"],
             type_=event_type,
             timestamp=ts,
             session_id=session_id,
             segment_id=open_seg.id if open_seg else None,
+        )
+        entity_id = self._entity_id_for_camera(camera["id"])
+        if entity_id is None:
+            _LOGGER.debug(
+                "event %s: no entity_id for camera %s, skipping media capture",
+                event_id,
+                camera["id"],
+            )
+            return
+        self.hass.async_create_background_task(
+            self._capture_event_media(
+                event_id=event_id,
+                camera_id=camera["id"],
+                entity_id=entity_id,
+                event_type=event_type,
+                timestamp=ts,
+            ),
+            name=f"nest_recorder_event_capture_{event_id}",
+        )
+
+    def _entity_id_for_camera(self, camera_id: str) -> str | None:
+        """Reverse the _slug transform -- our slug is entity_id with dot->underscore."""
+        if "_" not in camera_id:
+            return None
+        first, rest = camera_id.split("_", 1)
+        return f"{first}.{rest}"
+
+    async def _capture_event_media(
+        self,
+        *,
+        event_id: int,
+        camera_id: str,
+        entity_id: str,
+        event_type: str,
+        timestamp: int,
+    ) -> None:
+        day = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+        time_str = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime(
+            "%H-%M-%S"
+        )
+        base_dir = self.storage_root / camera_id / "events" / day
+        try:
+            await self.hass.async_add_executor_job(
+                lambda: base_dir.mkdir(parents=True, exist_ok=True)
+            )
+        except OSError as err:
+            _LOGGER.warning("event %s: cannot create dir %s: %s", event_id, base_dir, err)
+            await self.store.update_event_media(event_id, media_status="FAILED")
+            return
+
+        snapshot_path = base_dir / f"{time_str}_{event_type}_{event_id}.jpg"
+        clip_path = base_dir / f"{time_str}_{event_type}_{event_id}.mp4"
+        clip_seconds = int(
+            self.entry.options.get(CONF_EVENT_CLIP_SECONDS, DEFAULT_EVENT_CLIP_SECONDS)
+        )
+        storage_class = self.entry.options.get(
+            CONF_STORAGE_CLASS, DEFAULT_STORAGE_CLASS
+        )
+
+        snapshot_ok = False
+        try:
+            await self.hass.services.async_call(
+                "camera",
+                "snapshot",
+                {"entity_id": entity_id, "filename": str(snapshot_path)},
+                blocking=True,
+            )
+            snapshot_ok = await self.hass.async_add_executor_job(snapshot_path.exists)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("event %s: snapshot failed: %s", event_id, err)
+
+        clip_ok = False
+        try:
+            await self.hass.services.async_call(
+                "camera",
+                "record",
+                {
+                    "entity_id": entity_id,
+                    "filename": str(clip_path),
+                    "duration": clip_seconds,
+                },
+                blocking=False,
+            )
+            await asyncio.sleep(clip_seconds + 5)
+            clip_ok = await self.hass.async_add_executor_job(clip_path.exists)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "event %s: clip capture failed (often expected for WebRTC-only cams): %s",
+                event_id,
+                err,
+            )
+
+        if snapshot_ok:
+            await self.store.update_event_media(
+                event_id, snapshot_local_path=str(snapshot_path)
+            )
+        if clip_ok:
+            await self.store.update_event_media(
+                event_id, clip_local_path=str(clip_path)
+            )
+
+        if not (snapshot_ok or clip_ok):
+            await self.store.update_event_media(event_id, media_status="FAILED")
+            return
+
+        # Upload whichever made it.
+        async with self._upload_sem:
+            if snapshot_ok:
+                key = f"nest_recorder/{camera_id}/events/{day}/{snapshot_path.name}"
+                try:
+                    await self.glacier.async_upload_segment(
+                        snapshot_path, key, storage_class
+                    )
+                    await self.store.update_event_media(
+                        event_id, snapshot_s3_key=key
+                    )
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "event %s: snapshot upload failed: %s", event_id, err
+                    )
+            if clip_ok:
+                key = f"nest_recorder/{camera_id}/events/{day}/{clip_path.name}"
+                try:
+                    await self.glacier.async_upload_segment(
+                        clip_path, key, storage_class
+                    )
+                    await self.store.update_event_media(
+                        event_id, clip_s3_key=key
+                    )
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "event %s: clip upload failed: %s", event_id, err
+                    )
+        await self.store.update_event_media(event_id, media_status="ARCHIVED")
+        _LOGGER.info(
+            "event %s captured (snapshot=%s clip=%s)",
+            event_id,
+            snapshot_ok,
+            clip_ok,
         )
 
     @staticmethod
